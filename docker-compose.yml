@@ -1,0 +1,91 @@
+services:
+  mysql:
+    image: mysql:5.7
+    container_name: olist-mysql
+    command: --local-infile=1 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: olist
+    ports: ["3306:3306"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./data/raw:/data/raw:ro
+      - ./sql:/sql:ro
+
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop2.7.4-java8
+    container_name: namenode
+    environment: [CLUSTER_NAME=olist]
+    env_file: ./hadoop.env
+    ports: ["50070:50070", "8020:8020"]
+    volumes: [namenode_data:/hadoop/dfs/name]
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop2.7.4-java8
+    container_name: datanode
+    env_file: ./hadoop.env
+    environment:
+      SERVICE_PRECONDITION: "namenode:50070"
+    ports: ["50075:50075"]
+    volumes: [datanode_data:/hadoop/dfs/data]
+    depends_on: [namenode]
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on: [zookeeper]
+    ports: ["29092:29092"]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  # Conteneur "outils" : client Hadoop + Sqoop 1.4.7 + Flume 1.9.0
+  tools:
+    build:
+      context: .
+      dockerfile: tools/Dockerfile
+    container_name: olist-tools
+    depends_on: [mysql, namenode, datanode]
+    volumes: [".:/project"]
+    working_dir: /project
+    command: tail -f /dev/null
+
+  # Hive (optionnel) : docker compose --profile hive up -d
+  hive-metastore-postgresql:
+    image: bde2020/hive-metastore-postgresql:2.3.0
+    profiles: ["hive"]
+  hive-metastore:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    profiles: ["hive"]
+    env_file: ./hadoop.env
+    command: /opt/hive/bin/hive --service metastore
+    environment:
+      SERVICE_PRECONDITION: "namenode:50070 datanode:50075 hive-metastore-postgresql:5432"
+    depends_on: [namenode, datanode, hive-metastore-postgresql]
+  hive-server:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-server
+    profiles: ["hive"]
+    env_file: ./hadoop.env
+    environment:
+      SERVICE_PRECONDITION: "hive-metastore:9083"
+    ports: ["10000:10000"]
+    volumes: [".:/project"]
+    depends_on: [hive-metastore]
+
+volumes:
+  mysql_data:
+  namenode_data:
+  datanode_data:
